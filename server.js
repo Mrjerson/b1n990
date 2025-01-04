@@ -27,7 +27,8 @@ db.connect((err) => {
 
 async function scrapeHighestNumber() {
   try {
-    const { data } = await axios.get(bodyURL);
+    console.log("Scraping highest number...");
+    const { data } = await axios.get(bodyURL, { timeout: 10000 });
     const $ = cheerio.load(data);
     const paginationNumbers = [];
 
@@ -39,6 +40,7 @@ async function scrapeHighestNumber() {
     });
 
     highestNumber = Math.max(...paginationNumbers);
+    console.log("Highest number scraped:", highestNumber);
   } catch (error) {
     console.error("Error scraping numbers:", error.message);
   }
@@ -46,9 +48,7 @@ async function scrapeHighestNumber() {
 
 function generateURLs() {
   if (highestNumber === 0) {
-    console.error(
-      "Highest number is not set yet. Make sure scraping is complete."
-    );
+    console.error("Highest number is not set yet. Make sure scraping is complete.");
     return [];
   }
 
@@ -61,7 +61,8 @@ function generateURLs() {
 
 async function scrapeLinksFromPage(url) {
   try {
-    const { data } = await axios.get(url);
+    console.log("Scraping links from:", url);
+    const { data } = await axios.get(url, { timeout: 10000 });
     const $ = cheerio.load(data);
 
     const links = [];
@@ -73,6 +74,7 @@ async function scrapeLinksFromPage(url) {
       links.push(fullLink);
     });
 
+    console.log("Links scraped:", links.length);
     return links;
   } catch (error) {
     console.error("Error scraping links from page:", error.message);
@@ -84,7 +86,8 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function scrapeCouponLinks(url) {
   try {
-    const { data } = await axios.get(url);
+    console.log("Scraping coupon links from:", url);
+    const { data } = await axios.get(url, { timeout: 10000 });
     const $ = cheerio.load(data);
 
     const couponLinks = [];
@@ -99,23 +102,23 @@ async function scrapeCouponLinks(url) {
     });
 
     // Scrape course name and description
-    const courseName = $(".ui.attached.segment h1.ui.grey.header")
-      .text()
-      .trim();
+    const courseName = $(".ui.attached.segment h1.ui.grey.header").text().trim();
     const courseDescription = $(".ui.attached.segment p").text().trim();
 
+    console.log("Coupon links scraped:", couponLinks.length);
     return { couponLinks, courseName, courseDescription };
   } catch (error) {
     console.error("Error scraping coupon links from page:", error.message);
     return { couponLinks: [], courseName: "", courseDescription: "" };
   } finally {
-    await delay(500);
+    await delay(5000); // 5-second delay
   }
 }
 
 async function saveLinkToDatabase(url, name, description) {
   return new Promise((resolve, reject) => {
     const checkQuery = "SELECT COUNT(*) AS count FROM udemy WHERE url = ?";
+    console.log("Executing query:", checkQuery);
     db.query(checkQuery, [url], (err, results) => {
       if (err) {
         console.error("Error checking for duplicate URL:", err.message);
@@ -125,8 +128,8 @@ async function saveLinkToDatabase(url, name, description) {
           console.log("URL already exists in database:", url);
           resolve();
         } else {
-          const query =
-            "INSERT INTO udemy (url, name, description) VALUES (?, ?, ?)";
+          const query = "INSERT INTO udemy (url, name, description) VALUES (?, ?, ?)";
+          console.log("Executing query:", query);
           db.query(query, [url, name, description], (err, results) => {
             if (err) {
               console.error("Error saving URL to database:", err.message);
@@ -143,8 +146,12 @@ async function saveLinkToDatabase(url, name, description) {
 }
 
 async function runScrapingProcess() {
-  while (true) {
+  let iteration = 0;
+  const maxIterations = 5; // Limit the number of iterations
+
+  while (iteration < maxIterations) {
     try {
+      console.log(`Starting iteration ${iteration + 1} of ${maxIterations}`);
       await scrapeHighestNumber();
       const urlsArray = generateURLs();
       let allLinks = [];
@@ -155,8 +162,7 @@ async function runScrapingProcess() {
       let allCouponLinks = [];
       let allCourseDetails = [];
       for (let fullLink of allLinks) {
-        const { couponLinks, courseName, courseDescription } =
-          await scrapeCouponLinks(fullLink);
+        const { couponLinks, courseName, courseDescription } = await scrapeCouponLinks(fullLink);
         allCouponLinks = allCouponLinks.concat(couponLinks);
         allCourseDetails.push({ courseName, courseDescription });
       }
@@ -167,11 +173,15 @@ async function runScrapingProcess() {
       }
 
       console.log("All coupon links saved to the database.");
-      await delay(2000);
+      iteration++;
+      await delay(2000); // 2-second delay between iterations
     } catch (error) {
       console.error("Error during scraping process:", error.message);
     }
   }
+
+  console.log("Scraping process completed.");
+  db.end(); // Close the database connection
 }
 
 runScrapingProcess();
