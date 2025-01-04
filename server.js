@@ -3,7 +3,7 @@ const axios = require("axios");
 const cheerio = require("cheerio");
 const mysql = require("mysql2");
 
-const bodyURL = "https://www.discudemy.com/all";
+const baseURL = "https://www.discudemy.com/all";
 let highestNumber = 0;
 
 const db = mysql.createConnection({
@@ -27,7 +27,7 @@ db.connect((err) => {
 
 async function scrapeHighestNumber() {
   try {
-    const { data } = await axios.get(bodyURL);
+    const { data } = await axios.get(baseURL);
     const $ = cheerio.load(data);
     const paginationNumbers = [];
 
@@ -42,21 +42,6 @@ async function scrapeHighestNumber() {
   } catch (error) {
     console.error("Error scraping numbers:", error.message);
   }
-}
-
-function generateURLs() {
-  if (highestNumber === 0) {
-    console.error(
-      "Highest number is not set yet. Make sure scraping is complete."
-    );
-    return [];
-  }
-
-  const urls = [];
-  for (let i = 1; i <= highestNumber; i++) {
-    urls.push(`${bodyURL}/${i}`);
-  }
-  return urls;
 }
 
 async function scrapeLinksFromPage(url) {
@@ -145,24 +130,19 @@ async function saveLinkToDatabase(url, name, description) {
 async function runScrapingProcess() {
   try {
     await scrapeHighestNumber();
-    const urlsArray = generateURLs();
-    let allLinks = [];
-    for (let url of urlsArray) {
-      const pageLinks = await scrapeLinksFromPage(url);
-      allLinks = allLinks.concat(pageLinks);
-    }
-    let allCouponLinks = [];
-    let allCourseDetails = [];
-    for (let fullLink of allLinks) {
-      const { couponLinks, courseName, courseDescription } =
-        await scrapeCouponLinks(fullLink);
-      allCouponLinks = allCouponLinks.concat(couponLinks);
-      allCourseDetails.push({ courseName, courseDescription });
-    }
-    for (let i = 0; i < allCouponLinks.length; i++) {
-      const couponLink = allCouponLinks[i];
-      const { courseName, courseDescription } = allCourseDetails[i];
-      await saveLinkToDatabase(couponLink, courseName, courseDescription);
+
+    for (let i = 1; i <= highestNumber; i++) {
+      const pageURL = `${baseURL}/${i}`;
+      console.log(`Processing page: ${pageURL}`);
+
+      const pageLinks = await scrapeLinksFromPage(pageURL);
+      for (let fullLink of pageLinks) {
+        const { couponLinks, courseName, courseDescription } =
+          await scrapeCouponLinks(fullLink);
+        for (let couponLink of couponLinks) {
+          await saveLinkToDatabase(couponLink, courseName, courseDescription);
+        }
+      }
     }
 
     console.log("All coupon links saved to the database.");
