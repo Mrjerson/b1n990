@@ -53,7 +53,7 @@ function generateURLs() {
   }
 
   const urls = [];
-  for (let i = 1; i <= 1; i++) {
+  for (let i = 1; i <= highestNumber; i++) {
     urls.push(`${bodyURL}/${i}`);
   }
   return urls;
