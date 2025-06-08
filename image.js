@@ -1,29 +1,29 @@
 require("dotenv").config();
 const axios = require("axios");
 const cheerio = require("cheerio");
-const mysql = require("mysql2");
+const { MongoClient } = require("mongodb");
 
 const baseURL = "https://www.discudemy.com/all";
 
-// Database connection
-const db = mysql.createConnection({
-  host: process.env.DB_HOST,
-  port: process.env.DB_PORT,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0,
+// MongoDB connection
+const client = new MongoClient(process.env.MONGO_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
 });
 
-db.connect((err) => {
-  if (err) {
+let db, udemyCollection;
+
+async function connectToDatabase() {
+  try {
+    await client.connect();
+    db = client.db(); // Uses the database specified in the connection string
+    udemyCollection = db.collection("udemy");
+    console.log("Connected to MongoDB database.");
+  } catch (err) {
     console.error("Error connecting to the database:", err.stack);
     process.exit(1); // Exit with an error code
   }
-  console.log("Connected to MySQL database.");
-});
+}
 
 // Function to scrape the highest number from the pagination buttons
 async function scrapeHighestNumber() {
@@ -81,22 +81,23 @@ async function scrapePageDetails(pageNumber) {
 
 // Function to update the image URL in the database
 async function updateImageInDatabase(name, imageUrl) {
-  return new Promise((resolve, reject) => {
-    const query = "UPDATE udemy SET image = ? WHERE name = ?";
-    db.query(query, [imageUrl, name], (err, results) => {
-      if (err) {
-        console.error("Error updating image in database:", err.message);
-        reject(err);
-      } else {
-        if (results.affectedRows > 0) {
-          console.log(`Updated image for "${name}"`);
-        } else {
-          console.log(`No matching record found for "${name}"`);
-        }
-        resolve(results);
-      }
-    });
-  });
+  try {
+    const result = await udemyCollection.updateOne(
+      { name: name },
+      { $set: { image: imageUrl } },
+      { upsert: false } // Only update existing documents
+    );
+
+    if (result.matchedCount > 0) {
+      console.log(`Updated image for "${name}"`);
+    } else {
+      console.log(`No matching record found for "${name}"`);
+    }
+    return result;
+  } catch (err) {
+    console.error("Error updating image in database:", err.message);
+    throw err;
+  }
 }
 
 // Function to delay execution
@@ -129,20 +130,22 @@ async function scrapeAndUpdateImages() {
     console.log("Scraping and updating completed.");
   } catch (error) {
     console.error("Error during scraping and updating process:", error.message);
-    throw error; // Re-throw the error to ensure the process exits with a non-zero status code
+    throw error;
   }
 }
 
 // Main function to run the script
 async function main() {
   try {
+    await connectToDatabase();
     await scrapeAndUpdateImages();
     console.log("Script completed successfully.");
   } catch (error) {
     console.error("Script failed:", error);
-    process.exit(1); // Exit with a non-zero status code to indicate failure
+    process.exit(1);
   } finally {
-    db.end(); // Close the database connection
+    await client.close(); // Close the MongoDB connection
+    console.log("Disconnected from MongoDB.");
   }
 }
 
