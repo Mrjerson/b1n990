@@ -1,44 +1,34 @@
 require("dotenv").config();
 const axios = require("axios");
 const cheerio = require("cheerio");
-const mysql = require("mysql2");
+const { MongoClient } = require("mongodb");
 
 const baseURL = "https://www.discudemy.com/all";
 let highestNumber = 0;
 
-// Database configuration
-const db = mysql.createConnection({
-  host: process.env.DB_HOST,
-  port: process.env.DB_PORT,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
-  waitForConnections: true,
-  connectionLimit: 10,
-  queueLimit: 0,
+// MongoDB configuration
+const client = new MongoClient(process.env.MONGO_URI, {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
 });
 
-// Connect to the database
-db.connect((err) => {
-  if (err) {
-    console.error("Error connecting to the database:", err.stack);
-    return;
+let db;
+let udemyCollection;
+
+// Connect to MongoDB
+async function connectToDatabase() {
+  try {
+    await client.connect();
+    db = client.db(process.env.DB_NAME); // e.g., "coupon_scraper"
+    udemyCollection = db.collection("udemy"); // Collection name
+    console.log("Connected to MongoDB.");
+  } catch (err) {
+    console.error("MongoDB connection error:", err);
+    process.exit(1);
   }
-  console.log("Connected to MySQL database.");
-});
+}
 
-// Ping the database every 60 seconds to keep the connection alive
-setInterval(() => {
-  db.ping((err) => {
-    if (err) {
-      console.error("Error pinging database:", err.message);
-    } else {
-      console.log("Database connection is alive.");
-    }
-  });
-}, 60000);
-
-// Function to scrape the highest page number
+// Scrape highest page number
 async function scrapeHighestNumber() {
   try {
     const { data } = await axios.get(baseURL);
@@ -53,18 +43,17 @@ async function scrapeHighestNumber() {
     });
 
     highestNumber = Math.max(...paginationNumbers);
-    console.log("Highest page number found:", highestNumber); // Debugging line
+    console.log("Highest page number found:", highestNumber);
   } catch (error) {
     console.error("Error scraping highest page number:", error.message);
   }
 }
 
-// Function to scrape links from a single page
+// Scrape links from a page
 async function scrapeLinksFromPage(url) {
   try {
     const { data } = await axios.get(url);
     const $ = cheerio.load(data);
-
     const links = [];
 
     $(".card .content .header a").each((index, element) => {
@@ -76,7 +65,6 @@ async function scrapeLinksFromPage(url) {
       }
     });
 
-    console.log(`Scraped ${links.length} links from ${url}`); // Debugging line
     return links;
   } catch (error) {
     console.error("Error scraping links from page:", error.message);
@@ -84,10 +72,10 @@ async function scrapeLinksFromPage(url) {
   }
 }
 
-// Function to add a delay between requests
+// Delay function
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Function to scrape coupon links and course details from a single link
+// Scrape coupon link and course data
 async function scrapeCouponLinks(url) {
   try {
     const { data } = await axios.get(url);
@@ -102,55 +90,41 @@ async function scrapeCouponLinks(url) {
       }
     });
 
-    // Scrape course name and description
     const courseName = $(".ui.attached.segment h1.ui.grey.header")
       .text()
       .trim();
     const courseDescription = $(".ui.attached.segment p").text().trim();
 
-    console.log(`Scraped ${couponLinks.length} coupon links from ${url}`); // Debugging line
     return { couponLinks, courseName, courseDescription };
   } catch (error) {
-    console.error("Error scraping coupon links from page:", error.message);
+    console.error("Error scraping coupon links:", error.message);
     return { couponLinks: [], courseName: "", courseDescription: "" };
   } finally {
-    await delay(1000); // Increased delay to 1 second to avoid rate limiting
+    await delay(1000);
   }
 }
 
-// Function to save a link to the database
+// Save to MongoDB
 async function saveLinkToDatabase(url, name, description) {
-  return new Promise((resolve, reject) => {
-    const checkQuery = "SELECT COUNT(*) AS count FROM udemy WHERE url = ?";
-    db.query(checkQuery, [url], (err, results) => {
-      if (err) {
-        console.error("Error checking for duplicate URL:", err.message);
-        reject(err);
-      } else {
-        if (results[0].count > 0) {
-          console.log("URL already exists in database:", url); // Debugging line
-          resolve();
-        } else {
-          const query =
-            "INSERT INTO udemy (url, name, description) VALUES (?, ?, ?)";
-          db.query(query, [url, name, description], (err, results) => {
-            if (err) {
-              console.error("Error saving URL to database:", err.message);
-              reject(err);
-            } else {
-              console.log("URL saved:", url); // Debugging line
-              resolve(results);
-            }
-          });
-        }
-      }
-    });
-  });
+  try {
+    const existing = await udemyCollection.findOne({ url });
+
+    if (existing) {
+      console.log("URL already exists in database:", url);
+      return;
+    }
+
+    await udemyCollection.insertOne({ url, name, description });
+    console.log("URL saved:", url);
+  } catch (err) {
+    console.error("Error saving to MongoDB:", err.message);
+  }
 }
 
-// Main function to run the scraping process
+// Main function
 async function runScrapingProcess() {
   try {
+    await connectToDatabase();
     await scrapeHighestNumber();
 
     for (let i = 1; i <= highestNumber; i++) {
@@ -158,24 +132,25 @@ async function runScrapingProcess() {
       console.log(`Processing page: ${pageURL}`);
 
       const pageLinks = await scrapeLinksFromPage(pageURL);
-      for (let fullLink of pageLinks) {
+      for (const fullLink of pageLinks) {
         const { couponLinks, courseName, courseDescription } =
           await scrapeCouponLinks(fullLink);
-        for (let couponLink of couponLinks) {
+
+        for (const couponLink of couponLinks) {
           await saveLinkToDatabase(couponLink, courseName, courseDescription);
         }
       }
 
-      await delay(2000); // Add a delay between processing pages
+      await delay(2000);
     }
 
-    console.log("All coupon links saved to the database.");
+    console.log("All coupon links saved.");
   } catch (error) {
     console.error("Error during scraping process:", error.message);
   } finally {
-    db.end(); // Close the database connection when done
+    await client.close();
   }
 }
 
-// Run the scraping process
+// Run it
 runScrapingProcess();
